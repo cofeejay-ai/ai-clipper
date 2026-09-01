@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Clipper</title>
+<style>
+  :root { --bg:#0f0f12; --card:#1a1a1f; --accent:#7c5cff; --text:#eee; --muted:#999; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, system-ui, sans-serif; background:var(--bg); color:var(--text); padding:16px; }
+  h1 { font-size: 1.3rem; margin-bottom: 4px; }
+  p.sub { color: var(--muted); margin-top:0; font-size: 0.9rem; }
+  .card { background:var(--card); border-radius:14px; padding:16px; margin-bottom:16px; }
+  label { display:block; font-size:0.85rem; color:var(--muted); margin-bottom:6px; margin-top:12px; }
+  input[type=text], input[type=number], select { width:100%; padding:10px; border-radius:8px; border:1px solid #333; background:#0f0f12; color:var(--text); font-size:1rem; }
+  input[type=file] { width:100%; color: var(--muted); }
+  button { width:100%; padding:14px; border:none; border-radius:10px; background:var(--accent); color:white; font-size:1rem; font-weight:600; margin-top:16px; }
+  button:disabled { opacity:0.5; }
+  .tabs { display:flex; gap:8px; margin-bottom:12px; }
+  .tab { flex:1; text-align:center; padding:10px; border-radius:8px; background:#0f0f12; cursor:pointer; font-size:0.9rem; }
+  .tab.active { background:var(--accent); }
+  #status { margin-top:12px; font-size:0.9rem; color:var(--muted); }
+  .clip { display:flex; gap:12px; margin-bottom:14px; align-items:flex-start; }
+  video { width:120px; border-radius:8px; background:#000; }
+  .clip-info { flex:1; }
+  .clip-info h3 { margin:0 0 4px 0; font-size:1rem; }
+  .clip-info p { margin:2px 0; font-size:0.8rem; color:var(--muted); }
+  a.dl { display:inline-block; margin-top:6px; color:var(--accent); text-decoration:none; font-size:0.85rem; font-weight:600; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+
+<h1>🎬 AI Clipper</h1>
+<p class="sub">Upload or paste a link → get hook-captioned vertical clips.</p>
+
+<div class="card">
+  <div class="tabs">
+    <div class="tab active" id="tab-upload" onclick="switchTab('upload')">Upload file</div>
+    <div class="tab" id="tab-url" onclick="switchTab('url')">Paste link</div>
+  </div>
+
+  <div id="panel-upload">
+    <label>Video file</label>
+    <input type="file" id="fileInput" accept="video/*">
+  </div>
+  <div id="panel-url" class="hidden">
+    <label>YouTube / TikTok / video URL</label>
+    <input type="text" id="urlInput" placeholder="https://...">
+  </div>
+
+  <label>Number of clips to generate</label>
+  <input type="number" id="clipCount" value="6" min="1" max="15">
+
+  <label>Transcription quality</label>
+  <select id="whisperSize">
+    <option value="tiny" selected>Fastest (tiny — best for free hosting)</option>
+    <option value="base">Fast (base)</option>
+    <option value="small">Balanced (small — needs more RAM/CPU)</option>
+    <option value="medium">Accurate (medium — needs a real computer, not free hosting)</option>
+  </select>
+  <p style="font-size:0.75rem;color:var(--muted);margin-top:6px;">On free hosting, processing is slow (shared CPU) — start with short videos (1-3 min) to test.</p>
+
+  <button id="submitBtn" onclick="submitJob()">Generate Clips</button>
+  <div id="status"></div>
+</div>
+
+<div class="card hidden" id="resultsCard">
+  <h2 style="font-size:1.05rem;">Clips</h2>
+  <div id="clipsList"></div>
+</div>
+
+<script>
+let pollTimer = null;
+
+function switchTab(which) {
+  document.getElementById('tab-upload').classList.toggle('active', which === 'upload');
+  document.getElementById('tab-url').classList.toggle('active', which === 'url');
+  document.getElementById('panel-upload').classList.toggle('hidden', which !== 'upload');
+  document.getElementById('panel-url').classList.toggle('hidden', which !== 'url');
+}
+
+async function submitJob() {
+  const btn = document.getElementById('submitBtn');
+  const statusEl = document.getElementById('status');
+  const fileInput = document.getElementById('fileInput');
+  const urlInput = document.getElementById('urlInput');
+  const clipCount = document.getElementById('clipCount').value;
+  const whisperSize = document.getElementById('whisperSize').value;
+
+  const form = new FormData();
+  form.append('clip_count', clipCount);
+  form.append('whisper_size', whisperSize);
+
+  if (fileInput.files.length > 0) {
+    form.append('file', fileInput.files[0]);
+  } else if (urlInput.value.trim()) {
+    form.append('url', urlInput.value.trim());
+  } else {
+    statusEl.textContent = 'Pick a file or paste a URL first.';
+    return;
+  }
+
+  btn.disabled = true;
+  statusEl.textContent = 'Uploading / fetching source video...';
+  document.getElementById('resultsCard').classList.add('hidden');
+  document.getElementById('clipsList').innerHTML = '';
+
+  try {
+    const res = await fetch('/api/jobs', { method: 'POST', body: form });
+    const data = await res.json();
+    if (data.error) {
+      statusEl.textContent = 'Error: ' + data.error;
+      btn.disabled = false;
+      return;
+    }
+    pollJob(data.job_id);
+  } catch (e) {
+    statusEl.textContent = 'Request failed: ' + e;
+    btn.disabled = false;
+  }
+}
+
+function pollJob(jobId) {
+  const statusEl = document.getElementById('status');
+  const btn = document.getElementById('submitBtn');
+
+  pollTimer = setInterval(async () => {
+    const res = await fetch('/api/jobs/' + jobId);
+    const job = await res.json();
+
+    if (job.status === 'error') {
+      statusEl.textContent = 'Error: ' + job.error;
+      clearInterval(pollTimer);
+      btn.disabled = false;
+      return;
+    }
+
+    let label = {
+      queued: 'Queued...',
+      transcribing: 'Transcribing audio...',
+      finding_clips: 'Finding the best moments + writing hooks...',
+      rendering: `Rendering clips (${job.rendered_count || 0}/${job.total_clips || '?'})...`,
+    }[job.status] || job.status;
+    statusEl.textContent = label;
+
+    if (job.clips && job.clips.length > 0) {
+      renderClips(jobId, job.clips);
+    }
+
+    if (job.status === 'done') {
+      statusEl.textContent = `Done — ${job.clips.length} clips ready.`;
+      clearInterval(pollTimer);
+      btn.disabled = false;
+    }
+  }, 2000);
+}
+
+function renderClips(jobId, clips) {
+  const card = document.getElementById('resultsCard');
+  const list = document.getElementById('clipsList');
+  card.classList.remove('hidden');
+  list.innerHTML = '';
+  clips.forEach(c => {
+    const url = `/api/jobs/${jobId}/clips/${c.file}`;
+    const div = document.createElement('div');
+    div.className = 'clip';
+    div.innerHTML = `
+      <video src="${url}" controls preload="metadata"></video>
+      <div class="clip-info">
+        <h3>${c.title || c.hook || ('Clip ' + c.index)}</h3>
+        <p>"${c.hook}"</p>
+        <p>${c.start.toFixed(0)}s – ${c.end.toFixed(0)}s</p>
+        <a class="dl" href="${url}" download>Download</a>
+      </div>`;
+    list.appendChild(div);
+  });
+}
+</script>
+</body>
+</html>
