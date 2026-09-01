@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: ai-clipper
+    runtime: docker
+    plan: free
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: WHISPER_MODEL_SIZE
+        value: tiny
